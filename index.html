@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>牛市狂飙 - V16.0 爆汁版</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #0d0d0d; overflow: hidden; color: #fff; font-family: 'Microsoft YaHei', sans-serif; touch-action: none; user-select: none; -webkit-user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #loading-ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #0d0d0d; z-index: 999; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        .spinner { width: 50px; height: 50px; border: 5px solid #333; border-top: 5px solid #e74c3c; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        #shop-ui { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 10, 10, 0.95); z-index: 10; flex-direction: column; padding: 20px; box-sizing: border-box; backdrop-filter: blur(10px); }
+        .shop-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e74c3c; padding-bottom: 15px; margin-bottom: 20px; }
+        .shop-title { font-size: 28px; font-weight: bold; color: #e74c3c; text-shadow: 0 0 10px rgba(231,76,60,0.5); }
+        .shop-wealth { font-size: 20px; color: #f1c40f; font-weight: bold; }
+        .shop-items { flex: 1; overflow-y: auto; padding-right: 10px; }
+        .shop-item { background: rgba(255, 255, 255, 0.05); border-radius: 12px; padding: 15px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #333; }
+        .item-info { flex: 1; }
+        .item-name { font-size: 18px; font-weight: bold; margin-bottom: 5px; color: #fff; display: flex; align-items: center; gap: 8px;}
+        .item-desc { font-size: 12px; color: #aaa; }
+        .item-status { font-size: 12px; color: #3498db; margin-top: 4px; }
+        .buy-btn { background: #e74c3c; color: #fff; border: none; padding: 8px 15px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 0 #c0392b; }
+        .buy-btn:active { transform: translateY(4px); box-shadow: 0 0 0 #c0392b; }
+        .buy-btn.disabled { background: #444; color: #888; box-shadow: 0 4px 0 #222; pointer-events: none; }
+        .buy-btn.equip { background: #2ecc71; box-shadow: 0 4px 0 #27ae60; }
+        .close-shop-btn { background: #444; color: #fff; border: none; padding: 15px; border-radius: 12px; font-size: 18px; font-weight: bold; margin-top: 20px; cursor: pointer; }
+    </style>
+    <script src="https://sad.adsgram.ai/js/sad.min.js"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+    <div id="loading-ui">
+        <div class="spinner"></div>
+        <div id="loading-text" style="font-size: 18px; font-weight: bold; color: #e74c3c;">连接交易所节点中... 0%</div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="shop-ui">
+        <div class="shop-header"><div class="shop-title">🛒 暗网交易所</div><div class="shop-wealth">资金: <span id="shop-total-wealth">0</span> W</div></div>
+        <div class="shop-items" id="shop-items-container"></div>
+        <button class="close-shop-btn" onclick="closeShop()">离开交易所 (返回主界面)</button>
+    </div>
+
+    <script>
+        // === Telegram 初始化 ===
+        const tg = window.Telegram ? window.Telegram.WebApp : null;
+        if (tg) {
+            tg.ready();
+            tg.expand(); // 自动铺满全屏
+            // 获取玩家真实姓名 (如果是在 TG 里打开)
+            var tgUser = tg.initDataUnsafe?.user?.first_name || "神秘游资";
+        }
+
+        const ASSET_PATHS = {
+            bg: "images/bg.jpg", wall: "images/wall.png", obstacle: "images/kline.png",      
+            skin_default: "images/player.png", coin: "images/money.png", shield: "images/shield.png",       
+            ticket: "images/ticket.png", skin_doge: "images/doge.png"       
+        };
+
+        const images = {}; let loadedCount = 0; const assetKeys = Object.keys(ASSET_PATHS); const validAssetsCount = assetKeys.length;
+        function preloadAssets(callback) {
+            if (validAssetsCount === 0) { document.getElementById('loading-ui').style.display = 'none'; return callback(); }
+            assetKeys.forEach(key => {
+                images[key] = new Image();
+                images[key].onload = () => { loadedCount++; document.getElementById('loading-text').innerText = `加载赛博资产中... ${Math.floor((loadedCount / validAssetsCount) * 100)}%`; if (loadedCount === validAssetsCount) finishLoading(callback); };
+                images[key].onerror = () => { loadedCount++; images[key] = null; if (loadedCount === validAssetsCount) finishLoading(callback); };
+                images[key].src = ASSET_PATHS[key];
+            });
+        }
+        function finishLoading(callback) { setTimeout(() => { document.getElementById('loading-ui').style.display = 'none'; callback(); }, 300); }
+
+        // === 粒子类 (Visual Juice) ===
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x; this.y = y;
+                this.color = color;
+                this.size = Math.random() * 4 + 1;
+                this.speedX = (Math.random() - 0.5) * 8;
+                this.speedY = (Math.random() - 0.5) * 8;
+                this.life = 1.0;
+                this.decay = Math.random() * 0.04 + 0.02;
+            }
+            update() {
+                this.x += this.speedX; this.y += this.speedY;
+                this.life -= this.decay;
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+                ctx.restore();
+            }
+        }
+
+        let particles = [];
+        function createExplosion(x, y, color, count = 10, vibrate = 0) {
+            for (let i = 0; i < count; i++) particles.push(new Particle(x, y, color));
+            // 手机触感反馈
+            if (vibrate > 0 && navigator.vibrate) navigator.vibrate(vibrate);
+            // TG 原生震动反馈
+            if (vibrate > 0 && tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+        }
+
+        const balancingConfig = { baseScrollSpeed: 5, maxScrollSpeed: 16, speedGrowthRate: 0.002, minObsWidth: 40, maxObsWidthLimit: 120, widthGrowthRate: 0.005, initialSpawnRate: 65, minSpawnRateLimit: 30, freqIncreaseRate: 0.01, coinSpawnInterval: 180, shieldSpawnInterval: 800, baseShieldTime: 300 };
+        const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getContext('2d');
+        let screenWidth = window.innerWidth; let screenHeight = window.innerHeight; canvas.width = screenWidth; canvas.height = screenHeight;
+        const wallWidth = 25; const playerSize = 36;    
+
+        let gameState = 'start'; let frameCount = 0; let score = 0; let coinsCollected = 0; let isNewRecord = false; 
+        let economy = JSON.parse(localStorage.getItem('bullMarketEconomy')) || { totalWealth: 0, ownedSkins: ['skin_default'], currentSkin: 'skin_default', instTickets: 0, reviveTickets: 0, shieldLevel: 0, startShields: 0 };
+        function saveEconomy() { localStorage.setItem('bullMarketEconomy', JSON.stringify(economy)); }
+
+        let reviveUsedThisGame = false; let reviveTimer = 0; let reviveType = 'share';       
+        let highScore = parseInt(localStorage.getItem('bullMarketHighScore')) || 0; 
+        let highScoreName = localStorage.getItem('bullMarketHighName') || (tgUser || '神秘游资');
+        let recordMarkerSpawned = false; let recordMarkerY = -100;
+
+        const ADSGRAM_BLOCK_ID = "你的_UNIT_ID_写在这里"; const TG_APP_URL = "https://t.me/YourBotName/App"; const SHARE_TEXT = "我在A股最高点被套牢了！快来注入资金救我！";
+        let AdController = null; try { if (window.Adsgram && ADSGRAM_BLOCK_ID !== "你的_UNIT_ID_写在这里") { AdController = window.Adsgram.init({ blockId: ADSGRAM_BLOCK_ID }); } else { throw new Error("模拟"); } } catch (e) { AdController = { show: () => new Promise((resolve) => { setTimeout(() => { resolve(); }, 2000); }) }; }
+
+        let player = { side: 'left', baseY: screenHeight * 0.75, x: wallWidth, y: screenHeight * 0.75, isJumping: false, jumpProgress: 0, jumpSpeed: 0.05, jumpArcHeight: 70, shieldTimer: 0 };
+        let wallLines = []; let lineCount = Math.ceil(screenHeight / 60) + 1; for(let i = 0; i < lineCount; i++) { wallLines.push({ y: i * 60 }); }
+        let obstacles = []; let items = []; 
+        let currentMaxObsWidth = balancingConfig.minObsWidth; let currentSpawnInterval = balancingConfig.initialSpawnRate; let currentScrollSpeed = balancingConfig.baseScrollSpeed; 
+
+        let audioCtx; function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
+        function playSound(type) { if (!audioCtx) return; const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); osc.connect(gain); gain.connect(audioCtx.destination); if(type==='jump'){ osc.type = 'sine'; osc.frequency.setValueAtTime(300, audioCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(600, audioCtx.currentTime + 0.1); gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1); osc.start(); osc.stop(audioCtx.currentTime + 0.1); } if(type==='coin'){ osc.type = 'square'; osc.frequency.setValueAtTime(987.77, audioCtx.currentTime); osc.frequency.setValueAtTime(1318.51, audioCtx.currentTime + 0.08); gain.gain.setValueAtTime(0.1, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.2); osc.start(); osc.stop(audioCtx.currentTime + 0.2); } if(type==='shield'){ osc.type = 'triangle'; osc.frequency.setValueAtTime(400, audioCtx.currentTime); osc.frequency.linearRampToValueAtTime(800, audioCtx.currentTime + 0.3); gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.4); osc.start(); osc.stop(audioCtx.currentTime + 0.4); } if(type==='crash'){ osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, audioCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.3); gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3); osc.start(); osc.stop(audioCtx.currentTime + 0.3); } }
+
+        function spawnObstacle() { const side = Math.random() < 0.5 ? 'left' : 'right'; const dynamicWidth = balancingConfig.minObsWidth + Math.random() * (currentMaxObsWidth - balancingConfig.minObsWidth); const dynamicHeight = 40 + Math.random() * 20; const x = (side === 'left') ? wallWidth : canvas.width - wallWidth - dynamicWidth; obstacles.push({ x: x, y: -80, width: dynamicWidth, height: dynamicHeight, side: side }); }
+        function spawnItem(type) { 
+            let side = Math.random() < 0.5 ? 'left' : 'right'; 
+            for(let i = 0; i < obstacles.length; i++) { if (obstacles[i].y < 150) { side = (obstacles[i].side === 'left') ? 'right' : 'left'; break; } }
+            const size = 32; const x = (side === 'left') ? wallWidth + 5 : canvas.width - wallWidth - size - 5; items.push({ type: type, x: x, y: -50, width: size, height: size }); 
+        }
+
+        window.addEventListener('resize', () => { screenWidth = window.innerWidth; screenHeight = window.innerHeight; canvas.width = screenWidth; canvas.height = screenHeight; player.baseY = screenHeight * 0.75; if (!player.isJumping) { player.y = player.baseY; player.x = (player.side === 'left') ? wallWidth : screenWidth - wallWidth - playerSize; } });
+
+        const shopItemsData = [ { id: 'skin_doge', name: '🐶 币圈恶犬 (皮肤)', desc: '换上经典的 Doge 造型', price: 500, type: 'skin', value: 'skin_doge' }, { id: 'inst_ticket', name: '🎫 机构入场券 (消耗品)', desc: '开局直接从 500 点起飞', price: 1000, type: 'consumable', key: 'instTickets' }, { id: 'revive_ticket', name: '🎟️ 免广复活券 (消耗品)', desc: '免看广告，直接复活', price: 800, type: 'consumable', key: 'reviveTickets' }, { id: 'start_shield', name: '🛡️ 开局金身 (消耗品)', desc: '开局自带无敌护盾', price: 500, type: 'consumable', key: 'startShields' }, { id: 'shield_upg', name: '⏱️ 护盾扩容 (永久升级)', desc: '护盾持续时间 +1 秒', price: 1500, type: 'upgrade', key: 'shieldLevel' } ];
+        function openShop() { gameState = 'shop'; document.getElementById('shop-ui').style.display = 'flex'; renderShop(); }
+        function closeShop() { gameState = 'start'; document.getElementById('shop-ui').style.display = 'none'; }
+        function renderShop() { document.getElementById('shop-total-wealth').innerText = economy.totalWealth; const container = document.getElementById('shop-items-container'); container.innerHTML = ''; shopItemsData.forEach(item => { let btnHtml = ''; let statusHtml = ''; if (item.type === 'skin') { if (economy.ownedSkins.includes(item.value)) { if (economy.currentSkin === item.value) { btnHtml = `<button class="buy-btn disabled">已装备</button>`; } else { btnHtml = `<button class="buy-btn equip" onclick="equipSkin('${item.value}')">装备</button>`; } } else { let canAfford = economy.totalWealth >= item.price; btnHtml = `<button class="buy-btn ${canAfford ? '' : 'disabled'}" onclick="buyItem('${item.id}')">${item.price} W</button>`; } } else if (item.type === 'consumable') { let count = economy[item.key]; statusHtml = `库存: ${count} 个`; let canAfford = economy.totalWealth >= item.price; btnHtml = `<button class="buy-btn ${canAfford ? '' : 'disabled'}" onclick="buyItem('${item.id}')">${item.price} W</button>`; } else if (item.type === 'upgrade') { let level = economy[item.key]; statusHtml = `当前等级: Lv.${level} (+${level}秒)`; let currentPrice = item.price + level * 500; let canAfford = economy.totalWealth >= currentPrice; btnHtml = `<button class="buy-btn ${canAfford ? '' : 'disabled'}" onclick="buyItem('${item.id}')">${currentPrice} W</button>`; } container.innerHTML += `<div class="shop-item"><div class="item-info"><div class="item-name">${item.name}</div><div class="item-desc">${item.desc}</div><div class="item-status">${statusHtml}</div></div>${btnHtml}</div>`; }); }
+        window.equipSkin = function(val) { economy.currentSkin = val; saveEconomy(); renderShop(); }
+        window.buyItem = function(id) { let item = shopItemsData.find(i => i.id === id); let price = item.price; if (item.type === 'upgrade') price += economy[item.key] * 500; if (economy.totalWealth >= price) { economy.totalWealth -= price; if (item.type === 'skin') { economy.ownedSkins.push(item.value); economy.currentSkin = item.value; } else if (item.type === 'consumable') { economy[item.key]++; } else if (item.type === 'upgrade') { economy[item.key]++; } saveEconomy(); renderShop(); } }
+
+        function handleInteraction(e) {
+            initAudio(); 
+            if (gameState === 'start' && e) { let touchX = e.type === 'touchstart' ? e.touches[0].clientX : e.clientX; let touchY = e.type === 'touchstart' ? e.touches[0].clientY : e.clientY; if (touchX > screenWidth - 150 && touchY > screenHeight - 80) { openShop(); return; } }
+            if (gameState === 'start' || gameState === 'gameover') { resetGame(); gameState = 'playing'; } else if (gameState === 'playing') { if (player.isJumping) return; player.isJumping = true; player.jumpProgress = 0; player.jumpSpeed = 0.05 + (currentScrollSpeed - balancingConfig.baseScrollSpeed) * 0.002; playSound('jump'); } else if (gameState === 'revive_prompt') { triggerReviveProcess(); }
+        }
+        window.addEventListener('keydown', (e) => { if (e.code === 'Space') handleInteraction(); });
+        window.addEventListener('touchstart', (e) => { if (gameState !== 'shop') e.preventDefault(); handleInteraction(e); }, { passive: false });
+        window.addEventListener('mousedown', handleInteraction);
+
+        function resetGame() { player.side = 'left'; player.x = wallWidth; player.baseY = screenHeight * 0.75; player.y = player.baseY; player.isJumping = false; player.shieldTimer = 0; obstacles = []; items = []; particles = []; frameCount = 0; score = 0; coinsCollected = 0; if (economy.instTickets > 0) { economy.instTickets--; score = 500; } currentMaxObsWidth = Math.min(balancingConfig.minObsWidth + score * balancingConfig.widthGrowthRate, balancingConfig.maxObsWidthLimit); currentSpawnInterval = Math.max(balancingConfig.initialSpawnRate - score * balancingConfig.freqIncreaseRate, balancingConfig.minSpawnRateLimit); currentScrollSpeed = Math.min(balancingConfig.baseScrollSpeed + score * balancingConfig.speedGrowthRate, balancingConfig.maxScrollSpeed); if (economy.startShields > 0) { economy.startShields--; player.shieldTimer = balancingConfig.baseShieldTime + (economy.shieldLevel * 60); } saveEconomy(); isNewRecord = false; recordMarkerSpawned = false; reviveUsedThisGame = false; }
+        function checkCollision(rect1, rect2) { return (rect1.x < rect2.x + rect2.width && rect1.x + rect1.width > rect2.x && rect1.y < rect2.y + rect2.height && rect1.y + rect1.height > rect2.y); }
+        function handleDeath() { 
+            createExplosion(player.x + playerSize/2, player.y + playerSize/2, '#e74c3c', 30, 100); 
+            playSound('crash'); 
+            if (!reviveUsedThisGame) { gameState = 'revive_prompt'; reviveTimer = 600; if (economy.reviveTickets > 0) { reviveType = 'ticket'; } else { let today = new Date().toDateString(); let lastShareDate = localStorage.getItem('lastShareReviveDate'); if (lastShareDate !== today) { reviveType = 'share'; } else { reviveType = 'ad'; } } } else { gameOver(); } 
+        }
+        function triggerReviveProcess() { if (reviveType === 'ticket') { economy.reviveTickets--; saveEconomy(); executeRevive(); } else if (reviveType === 'share') { localStorage.setItem('lastShareReviveDate', new Date().toDateString()); let encodedUrl = encodeURIComponent(TG_APP_URL); let encodedText = encodeURIComponent(SHARE_TEXT); window.open(`https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`, '_blank'); setTimeout(() => { executeRevive(); }, 1000); } else if (reviveType === 'ad') { gameState = 'watching_ad'; AdController.show().then((result) => { executeRevive(); }).catch((result) => { alert("获取资金失败！"); gameOver(); }); } }
+        function executeRevive() { reviveUsedThisGame = true; obstacles = []; player.shieldTimer = 180; player.isJumping = false; player.y = player.baseY; player.x = (player.side === 'left') ? wallWidth : canvas.width - wallWidth - playerSize; gameState = 'playing'; }
+        function gameOver() { gameState = 'gameover'; economy.totalWealth += coinsCollected; saveEconomy(); if (score > highScore) { isNewRecord = true; setTimeout(() => { let playerName = prompt("🔥 恭喜打破历史最高指数记录！🔥", highScoreName); if (playerName) { highScoreName = playerName.substring(0, 10); localStorage.setItem('bullMarketHighName', highScoreName); } highScore = score; localStorage.setItem('bullMarketHighScore', highScore); }, 50); } }
+
+        function update() {
+            if (gameState === 'watching_ad' || gameState === 'shop') return;
+            if (gameState === 'revive_prompt') { reviveTimer--; if (reviveTimer <= 0) gameOver(); return; }
+            if (gameState !== 'playing') return; 
+            
+            frameCount++; score++; 
+            currentMaxObsWidth = Math.min(balancingConfig.minObsWidth + score * balancingConfig.widthGrowthRate, balancingConfig.maxObsWidthLimit); currentSpawnInterval = Math.max(balancingConfig.initialSpawnRate - score * balancingConfig.freqIncreaseRate, balancingConfig.minSpawnRateLimit); currentScrollSpeed = Math.min(balancingConfig.baseScrollSpeed + score * balancingConfig.speedGrowthRate, balancingConfig.maxScrollSpeed);
+            for(let i = 0; i < wallLines.length; i++) { wallLines[i].y += currentScrollSpeed; if (wallLines[i].y > canvas.height) wallLines[i].y -= canvas.height; }
+            if (player.shieldTimer > 0) player.shieldTimer--;
+
+            if (highScore > 0 && !recordMarkerSpawned) { let framesToReachPlayer = player.baseY / currentScrollSpeed; if (highScore - score <= framesToReachPlayer) { recordMarkerSpawned = true; recordMarkerY = player.baseY - (highScore - score) * currentScrollSpeed; } }
+            if (recordMarkerSpawned) recordMarkerY += currentScrollSpeed; 
+
+            // 粒子更新
+            for (let i = particles.length - 1; i >= 0; i--) { particles[i].update(); if (particles[i].life <= 0) particles.splice(i, 1); }
+
+            if (player.isJumping) {
+                player.jumpProgress += player.jumpSpeed; const startX = (player.side === 'left') ? wallWidth : canvas.width - wallWidth - playerSize; const endX = (player.side === 'left') ? canvas.width - wallWidth - playerSize : wallWidth; player.x = startX + (endX - startX) * player.jumpProgress; player.y = player.baseY - Math.sin(player.jumpProgress * Math.PI) * player.jumpArcHeight;
+                if (player.jumpProgress >= 1) { 
+                    player.isJumping = false; 
+                    player.side = (player.side === 'left') ? 'right' : 'left'; 
+                    player.x = endX; player.y = player.baseY; 
+                    createExplosion(player.x + playerSize/2, player.y + playerSize, '#ffffff', 5, 20); // 落地火花
+                }
+            }
+
+            let playerHitBox = { x: player.x + 5, y: player.y + 5, width: playerSize - 10, height: playerSize - 10 };
+            if (frameCount % Math.floor(currentSpawnInterval) === 0) spawnObstacle();
+            if (frameCount % balancingConfig.coinSpawnInterval === 0) spawnItem('coin');
+            if (frameCount % balancingConfig.shieldSpawnInterval === 0) spawnItem('shield');
+
+            for (let i = items.length - 1; i >= 0; i--) { let item = items[i]; item.y += currentScrollSpeed; if (checkCollision(playerHitBox, item)) { if (item.type === 'coin') { coinsCollected++; playSound('coin'); createExplosion(item.x + item.width/2, item.y + item.height/2, '#f1c40f', 15, 20); } else if (item.type === 'shield') { player.shieldTimer = balancingConfig.baseShieldTime + (economy.shieldLevel * 60); playSound('shield'); createExplosion(item.x + item.width/2, item.y + item.height/2, '#3498db', 15, 30); } items.splice(i, 1); continue; } if (item.y > canvas.height) items.splice(i, 1); }
+            for (let i = obstacles.length - 1; i >= 0; i--) { let obs = obstacles[i]; obs.y += currentScrollSpeed; if (checkCollision(playerHitBox, obs)) { if (player.shieldTimer > 0) { createExplosion(obs.x + obs.width/2, obs.y + obs.height/2, '#e74c3c', 20, 50); obstacles.splice(i, 1); playSound('crash'); continue; } else { handleDeath(); } } if (obs.y > canvas.height) obstacles.splice(i, 1); }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (images.bg) { let parallaxOffset = (score * 0.1) % canvas.height; ctx.drawImage(images.bg, 0, parallaxOffset, canvas.width, canvas.height); ctx.drawImage(images.bg, 0, parallaxOffset - canvas.height, canvas.width, canvas.height); } else { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+            for(let i = 0; i < wallLines.length; i++) { if (images.wall) { ctx.drawImage(images.wall, 0, wallLines[i].y, wallWidth, 60); ctx.drawImage(images.wall, canvas.width - wallWidth, wallLines[i].y, wallWidth, 60); } else { ctx.fillStyle = '#333'; ctx.fillRect(0, wallLines[i].y, wallWidth, 60); ctx.fillRect(canvas.width - wallWidth, wallLines[i].y, wallWidth, 60); } }
+            
+            // 绘制粒子
+            particles.forEach(p => p.draw(ctx));
+
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            if (gameState === 'playing' || gameState === 'gameover' || gameState === 'revive_prompt' || gameState === 'watching_ad') {
+                if (recordMarkerSpawned && recordMarkerY < canvas.height + 50) { ctx.save(); ctx.beginPath(); ctx.setLineDash([8, 6]); ctx.moveTo(canvas.width / 2, recordMarkerY); ctx.lineTo(canvas.width - wallWidth, recordMarkerY); ctx.strokeStyle = 'rgba(241, 196, 15, ' + (0.5 + Math.sin(Date.now() * 0.01) * 0.5) + ')'; ctx.lineWidth = 2; ctx.stroke(); ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 16px "Microsoft YaHei"'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillText('🚩 ' + highScoreName + ' 的巅峰: ' + highScore, canvas.width - wallWidth - 10, recordMarkerY - 5); ctx.restore(); }
+                for (let i = 0; i < items.length; i++) { let item = items[i]; if (images[item.type]) { ctx.drawImage(images[item.type], item.x, item.y, item.width, item.height); } else { ctx.font = '24px Arial'; ctx.fillText(item.type === 'coin' ? '💰' : '🛡️', item.x + item.width/2, item.y + item.height/2); } }
+                for (let i = 0; i < obstacles.length; i++) { let obs = obstacles[i]; if (images.obstacle) { ctx.drawImage(images.obstacle, obs.x, obs.y, obs.width, obs.height); } else { ctx.save(); ctx.translate(obs.x, obs.y); ctx.fillStyle = '#e74c3c'; ctx.fillRect(0, 0, obs.width, obs.height); ctx.fillStyle = '#c0392b'; ctx.fillRect(obs.width / 2 - 1, -10, 2, obs.height + 20); ctx.restore(); } }
+                
+                ctx.save(); 
+                ctx.translate(player.x + playerSize/2, player.y + playerSize); 
+                if (player.side === 'right' && !player.isJumping) ctx.scale(-1, 1); 
+                if (player.isJumping) { ctx.translate(0, -playerSize/2); ctx.rotate(player.jumpProgress * Math.PI * 4); ctx.translate(0, playerSize/2); } else { let runCycle = frameCount * 0.5; let bounce = Math.abs(Math.sin(runCycle)) * 6; ctx.translate(0, -bounce); let scaleX = 1 + Math.cos(runCycle * 2) * 0.08; let scaleY = 1 - Math.cos(runCycle * 2) * 0.08; ctx.scale(scaleX, scaleY); let tilt = Math.cos(runCycle) * 0.15; ctx.rotate(tilt); }
+                let currentSkinImg = images[economy.currentSkin];
+                if (currentSkinImg) { ctx.drawImage(currentSkinImg, -playerSize/2, -playerSize, playerSize, playerSize); } else { ctx.font = '32px Arial'; ctx.fillText(economy.currentSkin === 'skin_doge' ? '🐶' : '🏃', 0, -playerSize/2); }
+                ctx.restore();
+
+                if (player.shieldTimer > 0) { let alpha = (player.shieldTimer < 60) ? (0.2 + Math.sin(frameCount * 0.5) * 0.5) : (0.2 + Math.sin(frameCount * 0.1) * 0.1); ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(player.x + playerSize/2, player.y + playerSize/2, playerSize * 0.9, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = `rgba(241, 196, 15, ${alpha})`; ctx.fill(); }
+                ctx.fillStyle = '#fff'; ctx.font = 'bold 18px "Courier New", monospace'; ctx.textAlign = 'right'; ctx.fillText('上证指数: ' + score + ' 点', canvas.width - 25, 40); ctx.fillStyle = '#f1c40f'; ctx.fillText('本局资金: ' + coinsCollected + ' W', canvas.width - 25, 70);
+            }
+
+            if (gameState === 'revive_prompt') { ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#fff'; ctx.font = 'bold 30px "Microsoft YaHei"'; ctx.textAlign = 'center'; ctx.fillText('跌停危机！', canvas.width / 2, canvas.height / 2 - 100); let secondsLeft = Math.ceil(reviveTimer / 60); ctx.fillStyle = '#e74c3c'; ctx.font = 'bold 60px Arial'; ctx.fillText(secondsLeft, canvas.width / 2, canvas.height / 2 - 30); ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 24px "Microsoft YaHei"'; if (reviveType === 'ticket') { ctx.fillText('🎟️ 使用免广复活券 注入资金', canvas.width / 2, canvas.height / 2 + 50); } else if (reviveType === 'share') { ctx.fillText('📥 转发到群聊 获取资金救市', canvas.width / 2, canvas.height / 2 + 50); } else { ctx.fillText('📺 观看一段内幕 获取资金救市', canvas.width / 2, canvas.height / 2 + 50); } ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = 2; ctx.strokeRect(canvas.width/2 - 180, canvas.height/2 + 20, 360, 60); ctx.fillStyle = '#888'; ctx.font = '16px "Microsoft YaHei"'; ctx.fillText('轻触屏幕复活，等待倒计时结束放弃', canvas.width / 2, canvas.height / 2 + 120); }
+            if (gameState === 'watching_ad') { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#fff'; ctx.font = '24px "Microsoft YaHei"'; ctx.textAlign = 'center'; ctx.fillText('正在播放广告视频...', canvas.width / 2, canvas.height / 2); ctx.fillStyle = '#888'; ctx.font = '16px "Microsoft YaHei"'; ctx.fillText('(测试模式下将在2秒后自动完成)', canvas.width / 2, canvas.height / 2 + 40); }
+
+            if (gameState === 'start') {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#e74c3c'; ctx.font = 'bold 46px "Microsoft YaHei"'; ctx.textAlign = 'center'; ctx.shadowColor = '#e74c3c'; ctx.shadowBlur = 20; ctx.fillText('牛 市 狂 飙', canvas.width / 2, canvas.height / 2 - 60); ctx.shadowBlur = 0; 
+                ctx.fillStyle = 'rgba(255, 255, 255, ' + (0.5 + Math.sin(Date.now() * 0.005) * 0.5) + ')'; ctx.font = '18px "Microsoft YaHei"'; ctx.fillText('轻触屏幕上半部 跑步进场', canvas.width / 2, canvas.height / 2 + 20); ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 16px "Microsoft YaHei"'; ctx.fillText('🏆 当前榜首: ' + highScoreName + ' (' + highScore + ' 点)', canvas.width / 2, canvas.height / 2 + 100);
+                ctx.fillStyle = '#1e272e'; ctx.beginPath(); ctx.roundRect(canvas.width - 150, canvas.height - 80, 130, 50, 10); ctx.fill(); ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2; ctx.stroke(); ctx.fillStyle = '#fff'; ctx.font = 'bold 18px "Microsoft YaHei"'; ctx.fillText('🛒 交易所', canvas.width - 85, canvas.height - 55);
+            }
+
+            if (gameState === 'gameover') {
+                ctx.fillStyle = 'rgba(20, 0, 0, 0.9)'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#fff'; ctx.font = 'bold 40px "Microsoft YaHei"'; ctx.textAlign = 'center'; ctx.fillText('套 牢 高 位', canvas.width / 2, canvas.height / 2 - 40); ctx.font = 'bold 24px "Microsoft YaHei"'; ctx.fillText('最终上证指数: ' + score, canvas.width / 2, canvas.height / 2 + 10); ctx.fillStyle = '#f1c40f'; ctx.fillText('落袋为安: ' + coinsCollected + ' W', canvas.width / 2, canvas.height / 2 + 50);
+                if (isNewRecord && score > 0) { ctx.fillStyle = 'rgba(46, 204, 113, ' + (0.7 + Math.sin(Date.now() * 0.01) * 0.3) + ')'; ctx.font = 'bold 24px "Microsoft YaHei"'; ctx.fillText('🔥 新神诞生：' + highScoreName + ' 🔥', canvas.width / 2, canvas.height / 2 + 100); }
+                ctx.fillStyle = '#ddd'; ctx.font = '16px "Microsoft YaHei"'; ctx.fillText('轻触屏幕，再次杀入股市', canvas.width / 2, canvas.height / 2 + 140);
+            }
+        }
+        CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) { if (w < 2 * r) r = w / 2; if (h < 2 * r) r = h / 2; this.beginPath(); this.moveTo(x + r, y); this.arcTo(x + w, y, x + w, y + h, r); this.arcTo(x + w, y + h, x, y + h, r); this.arcTo(x, y + h, x, y, r); this.arcTo(x, y, x + w, y, r); this.closePath(); return this; }
+        preloadAssets(() => { loop(); });
+        function loop() { update(); draw(); requestAnimationFrame(loop); }
+    </script>
+</body>
+</html>
